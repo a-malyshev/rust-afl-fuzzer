@@ -2,7 +2,7 @@ use rand::prelude::*;
 use rand::distributions::{Distribution, Uniform};
 
 pub struct Mutator {
-    rng: ThreadRng,
+    pub rng: ThreadRng,
     pub inputs: Vec<&'static str>,
 }
 

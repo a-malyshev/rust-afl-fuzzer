@@ -9,10 +9,9 @@ use std::path::Path;
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::fmt;
-use rand::seq::SliceRandom;
-
 use crate::mutator::*;
 use crate::scheduler::*;
+use rand::*;
 
 #[derive(Debug)]
 struct Coverage {
@@ -34,12 +33,27 @@ impl fmt::Display for Coverage {
     }
 }
 
+use rand::Rng;
+use rand::distributions::{Distribution, Standard, Alphanumeric};
+use rand::prelude::*;
+
+struct ASCII {
+    c: char,
+}
+
+impl Distribution<ASCII> for Standard {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> ASCII {
+        ASCII { c: rng.gen_range(32u8,127u8) as char }
+    }
+}
+
 pub struct Fuzzer <'f> {
     seeds: Vec<String>,
     pub population: Vec<Seed>,
     print_stats: bool,
     mutator: &'f mut Mutator,
     scheduler: &'f mut Scheduler,
+    inputs: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +79,7 @@ impl <'f>Fuzzer<'f> {
             print_stats,
             mutator,
             scheduler,
+            inputs: vec![],
         }
     }
 
@@ -86,26 +101,31 @@ impl <'f>Fuzzer<'f> {
             }
         }
     }
-    
-    pub fn run<'s: 'f>(&'f mut self, path: &'f str) {
+
+    fn reset<'a>(&'a mut self) {
+        self.population = vec![];
+    }
+
+    pub fn run<'s: 'f>(&'f mut self, dir: &str, path: &'f str) {
         let time = Instant::now();
-        let mut last_unique_time = Instant::now();
+        //let mut last_unique_time = Instant::now();
         let mut total_number_of_lines = 0;
         let mut unique_hits_global: HashSet<i32> = HashSet::new();
         let mut num_exec = 0;
         let mut num_hits = 0;
         let mut non_unique_hits = 0;
+        let mut running = true;
 
-        while non_unique_hits <= 10000 {
+        while non_unique_hits <= 50000 && running {
 
             let candidate = self.fuzz();
             debug!("next candidate is {}", candidate);
 
             debug!("running the program");
-            let _result = self.run_program(path, candidate.clone());
+            let _result = self.run_program(dir, path, candidate.clone());
 
             debug!("parsing coverage results");
-            let map = self.parse_coverage("replace_on_correct_path");
+            let map = self.parse_coverage(dir);
 
             debug!("extracting unique hits");
             let cov = self.get_cov(map, &unique_hits_global);
@@ -116,23 +136,27 @@ impl <'f>Fuzzer<'f> {
             }
             
             if cov.unique_hits > 0 {
-                last_unique_time = Instant::now();
                 non_unique_hits = 0;
                 self.update_population(candidate.clone());
+                self.inputs.push(candidate.clone());
                 self.print_stats(format!("candidate: `{}`", candidate));
                 self.print_stats(format!("lines covered: [{}/{}]", cov.hitted_lines, total_number_of_lines));
                 self.print_stats(format!("unique hits: {}, hits are: {:?}", cov.unique_hits, cov.unique_lines));
                 self.print_stats(format!("--------------------------------------------"));
-            } else {
-                let now = Instant::now();
-                let passed = now.duration_since(last_unique_time).as_secs();
-                if passed != 0 && passed % 5 == 0 {
-                    last_unique_time = now;
-                    self.print_stats(format!("{} sec since last unique hit", passed));
+                if cov.hitted_lines == total_number_of_lines {
+                    self.print_stats(format!("all lines are reaching. Stopping fuzzing"));
+                    running = false;
                 }
+            } else {
+                debug!("population: {:?}", self.population);
                 non_unique_hits += 1;
                 if non_unique_hits % 1000 == 0 {
                     self.print_stats(format!("{} hits since last unique one", non_unique_hits));
+                    if non_unique_hits % 10000 == 0 {
+                        self.print_stats(format!("resetting seeds and genereting new ones"));
+                        self.reset();
+                        self.fill_population(gen_new_seeds());
+                    }
                 }
             }
 
@@ -140,8 +164,8 @@ impl <'f>Fuzzer<'f> {
             num_exec += 1;
 
             Command::new("rm")
+                .current_dir(dir)
                 .arg("-f")
-                .current_dir(&mut self.get_full_path(""))
                 .arg("cgi.c")
                 .output()
                 .expect("failed to execute gcov");
@@ -149,7 +173,8 @@ impl <'f>Fuzzer<'f> {
 
         self.print_stats(format!("time: {} seconds", time.elapsed().as_secs()));
         self.print_stats(format!("total number of executions: {}", num_exec));
-        info!("all generated inputs: {:?}", self.population.iter().map(|s| s.value.clone()).collect::<Vec<String>>());
+        self.print_stats(format!("inputs that led to unique coverage: {:?}", self.inputs));
+        //info!("inputs that led to unique coverage: {:?}", self.inputs);
         self.print_stats(format!("--------------------------------------------"));
         let final_cov = Coverage {
             unique_lines: unique_hits_global.clone(),
@@ -174,16 +199,17 @@ impl <'f>Fuzzer<'f> {
         self.population.sort_by(|a, b| a.energy.cmp(&b.energy));
     }
 
-    fn run_program(&mut self, cmd: &str, input: String) -> String {
+    fn run_program(&mut self, dir: &str, cmd: &str, input: String) -> String {
         let mut args = vec![];
         if input.len() != 0 { args.push(input) }
-        let output = Command::new(&mut self.get_full_path(cmd))
+        let output = Command::new(get_full_path(dir,cmd))
             .args(args)
+            //.current_dir(dir)
             .output()
             .expect("failed to execute cgi");
         Command::new("gcov")
-            .current_dir(&mut self.get_full_path(""))
-            .arg(&mut self.get_full_path("cgi.c"))
+            .arg("cgi.c")
+            .current_dir(dir)
             .output()
             .expect("failed to execute gcov");
         let res = output.stdout.to_vec();
@@ -191,9 +217,7 @@ impl <'f>Fuzzer<'f> {
         res.to_owned()
     }
 
-    fn get_full_path(&mut self, cmd: &str) -> String {
-        format!("/home/alex/Documents/dev/rust/cse867/hw1/test-app/{}", cmd)
-    }
+   
 
     fn get_cov(&mut self, map: HashMap<String, String>, unique_hits_global: &HashSet<i32>) -> Coverage {
         let map = self.get_reachable_lines(map);
@@ -231,9 +255,9 @@ impl <'f>Fuzzer<'f> {
     }
 
     /// parse coverage of the executed program. Return a map with lines and number of hits
-    fn parse_coverage(&mut self, _path: &str) -> HashMap<String, String> {
+    fn parse_coverage(&mut self, path: &str) -> HashMap<String, String> {
         let mut map = HashMap::new();
-        if let Ok(lines) = self.read_lines("/home/alex/Documents/dev/rust/cse867/hw1/test-app/cgi.c.gcov") {
+        if let Ok(lines) = self.read_lines(get_full_path(path, "cgi.c.gcov")) {
             for (i, line) in lines.enumerate() {
                 if let Ok(s) = line {
                     //todo: add debugging
@@ -268,7 +292,6 @@ impl <'f>Fuzzer<'f> {
             None
         } else {
             Some((self.clean_str(vals[1]), self.clean_str(vals[0])))
-            //Some((clean_str(vals[1]).parse().unwrap(), clean_str(vals[0]).parse().unwrap()))
         }
     }
 
@@ -284,6 +307,35 @@ impl <'f>Fuzzer<'f> {
         }
     }
 
+}
+
+pub fn get_full_path(path: &str, cmd: &str) -> String {
+    format!("{}/{}", path, cmd)
+}
+
+fn gen_new_seeds() -> Vec<String> {
+    let mut seeds: Vec<String> = vec![];
+    let strategy = random();
+    for _ in 1..3 {
+        let str_len = rand::thread_rng().gen_range(1, 50);
+        let mut v: Vec<char> = vec![];
+        for _ in 1..str_len {
+            let c = if strategy {
+                StdRng::from_entropy().sample::<ASCII,_>(Standard).c
+            } else {
+                StdRng::from_entropy().sample(Alphanumeric)
+            };
+            v.push(c);
+        }
+        seeds.push(v.into_iter().collect())
+    }
+    seeds
+}
+
+#[test]
+fn gen_strings() {
+    println!("seeds: {:?}", gen_new_seeds());
+    assert!(true);
 }
 
 #[test]
@@ -310,38 +362,4 @@ fn correct_update_population() {
     assert_eq!(fuzzer.population.last().unwrap().energy, 1);
     fuzzer.update_population("new".to_owned());
     assert_eq!(fuzzer.population.len(), 3);
-}
-
-#[test]
-fn empty_candidate() {
-    let mut mutator = Mutator::new();
-    let mut scheduler = Scheduler::new(); 
-    let mut fuzzer = Fuzzer::new(vec!["".to_owned()], &mut mutator, &mut scheduler, true);
-    fuzzer.run_program("cgi", "".to_owned());
-    assert!(true)
-}
-
-#[test]
-fn remove_file() {
-    let mut mutator = Mutator::new();
-    let mut scheduler = Scheduler::new(); 
-    let mut fuzzer = Fuzzer::new(vec!["".to_owned()], &mut mutator, &mut scheduler, true);
-    Command::new("rm")
-        .current_dir(fuzzer.get_full_path(""))
-        .arg("-f")
-        .arg("test")
-        .output()
-        .expect("failed to rm");
-}
-
-#[test]
-fn create_cov() {
-    let mut mutator = Mutator::new();
-    let mut scheduler = Scheduler::new(); 
-    let mut fuzzer = Fuzzer::new(vec!["".to_owned()], &mut mutator, &mut scheduler, true);
-    Command::new("gcov")
-        .current_dir(fuzzer.get_full_path(""))
-        .arg("cgi.c")
-        .output()
-        .expect("failed to execute gcov");
 }

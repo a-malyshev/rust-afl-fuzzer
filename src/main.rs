@@ -19,7 +19,12 @@ fn main() {
     let mut mutator = Mutator::new();
     let mut scheduler = Scheduler::new();
 
-    let mut fuzzer = Fuzzer::new(vec!["http://nytimes/globalnews".to_owned(), "42".to_owned()], &mut mutator, &mut scheduler, show_enabled);
+    let mut fuzzer = Fuzzer::new(vec!["http://nytimes/globalnews".to_owned(), "4258".to_owned(), "".to_owned()], &mut mutator, &mut scheduler, show_enabled);
 
-    fuzzer.run("cgi");
+    let app_dir = if let Some(dir) = env::args().find(|arg| arg.starts_with("-d")) {
+        dir.split('=').last().unwrap().to_owned()
+    } else {
+        env::current_dir().ok().unwrap().into_os_string().into_string().ok().unwrap()
+    };
+    fuzzer.run(&app_dir, "cgi");
 }
