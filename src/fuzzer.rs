@@ -11,7 +11,10 @@ use regex::Regex;
 use std::fmt;
 use crate::mutator::*;
 use crate::scheduler::*;
-use rand::*;
+use rand::Rng;
+use rand::distributions::{Distribution, Standard, Alphanumeric};
+use rand::prelude::*;
+
 
 #[derive(Debug)]
 struct Coverage {
@@ -24,7 +27,9 @@ struct Coverage {
 impl fmt::Display for Coverage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut unique_hits = String::from("");
-        for line in self.unique_lines.iter() {
+        let mut sorted_hits: Vec<i32> = self.unique_lines.clone().into_iter().collect();
+        sorted_hits.sort();
+        for line in sorted_hits {
             let s = format!("test.c:{}, ",line.to_string());
             unique_hits = format!("{}{}", unique_hits, s); 
         }
@@ -32,10 +37,6 @@ impl fmt::Display for Coverage {
         write!(f, "{}\n{}", self.unique_hits, unique_hits)
     }
 }
-
-use rand::Rng;
-use rand::distributions::{Distribution, Standard, Alphanumeric};
-use rand::prelude::*;
 
 struct ASCII {
     c: char,
@@ -108,7 +109,7 @@ impl <'f>Fuzzer<'f> {
 
     pub fn run<'s: 'f>(&'f mut self, dir: &str, path: &'f str) {
         let time = Instant::now();
-        //let mut last_unique_time = Instant::now();
+        let max_num_iter = 50000;
         let mut total_number_of_lines = 0;
         let mut unique_hits_global: HashSet<i32> = HashSet::new();
         let mut num_exec = 0;
@@ -116,13 +117,13 @@ impl <'f>Fuzzer<'f> {
         let mut non_unique_hits = 0;
         let mut running = true;
 
-        while non_unique_hits <= 50000 && running {
+        while non_unique_hits <= max_num_iter && running {
 
             let candidate = self.fuzz();
             debug!("next candidate is {}", candidate);
 
             debug!("running the program");
-            let _result = self.run_program(dir, path, candidate.clone());
+            let _result = self.exec_program(dir, path, candidate.clone());
 
             debug!("parsing coverage results");
             let map = self.parse_coverage(dir);
@@ -131,7 +132,6 @@ impl <'f>Fuzzer<'f> {
             let cov = self.get_cov(map, &unique_hits_global);
             num_hits += cov.hitted_lines;
             if num_exec == 0 {
-                // what is the better way to get number of lines in the program?
                 total_number_of_lines =  cov.reachable_lines;
             }
             
@@ -144,18 +144,21 @@ impl <'f>Fuzzer<'f> {
                 self.print_stats(format!("unique hits: {}, hits are: {:?}", cov.unique_hits, cov.unique_lines));
                 self.print_stats(format!("--------------------------------------------"));
                 if cov.hitted_lines == total_number_of_lines {
-                    self.print_stats(format!("all lines are reaching. Stopping fuzzing"));
+                    self.print_stats(format!("all lines are reached. Stopping fuzzing"));
                     running = false;
                 }
             } else {
                 debug!("population: {:?}", self.population);
                 non_unique_hits += 1;
-                if non_unique_hits % 1000 == 0 {
+                if non_unique_hits % 5000 == 0 {
                     self.print_stats(format!("{} hits since last unique one", non_unique_hits));
                     if non_unique_hits % 10000 == 0 {
                         self.print_stats(format!("resetting seeds and genereting new ones"));
                         self.reset();
-                        self.fill_population(gen_new_seeds());
+                        self.fill_population(gen_random_strings());
+                    } else if non_unique_hits % max_num_iter == 0 {
+                        self.print_stats(format!("after {} various mutations there still is no unique hits, so stopping fuzzing", non_unique_hits));
+                        running = false;
                     }
                 }
             }
@@ -174,8 +177,9 @@ impl <'f>Fuzzer<'f> {
         self.print_stats(format!("time: {} seconds", time.elapsed().as_secs()));
         self.print_stats(format!("total number of executions: {}", num_exec));
         self.print_stats(format!("inputs that led to unique coverage: {:?}", self.inputs));
-        //info!("inputs that led to unique coverage: {:?}", self.inputs);
         self.print_stats(format!("--------------------------------------------"));
+        let mut sorted_hits: Vec<i32> = unique_hits_global.clone().into_iter().collect();
+        sorted_hits.sort();
         let final_cov = Coverage {
             unique_lines: unique_hits_global.clone(),
             hitted_lines: num_hits,
@@ -199,7 +203,7 @@ impl <'f>Fuzzer<'f> {
         self.population.sort_by(|a, b| a.energy.cmp(&b.energy));
     }
 
-    fn run_program(&mut self, dir: &str, cmd: &str, input: String) -> String {
+    fn exec_program(&mut self, dir: &str, cmd: &str, input: String) -> String {
         let mut args = vec![];
         if input.len() != 0 { args.push(input) }
         let output = Command::new(get_full_path(dir,cmd))
@@ -240,7 +244,6 @@ impl <'f>Fuzzer<'f> {
     /// return hashmap with line number as a key and number of hits as a value.
     /// From here, it is easy to calc total number of lines in the program,
     /// number of hits for each line and also we can compare how many unique hits were covered.
-                            // todo: replace with wraper type
     fn get_hitted_lines(&mut self, map: HashMap<String,String>) -> HashMap<i32, i32> {
         self.get_reachable_lines(map).iter()
             .filter(|(_k,v)| !v.contains("#"))
@@ -279,7 +282,6 @@ impl <'f>Fuzzer<'f> {
         Ok(io::BufReader::new(file).lines())
     }
 
-    //todo: improve readability
     fn extract_hits_and_line_number(&mut self, line: &str) -> Option<(String, String)> {
         lazy_static! {
             static ref FUZZ_REGEX : Regex = Regex::new(
@@ -295,7 +297,6 @@ impl <'f>Fuzzer<'f> {
         }
     }
 
-    //todo: should I return &str and how to do it? what is the best way? why?
     fn clean_str(&mut self, s: &str) -> String {
         let result = s.replace(":", "");
         result.trim_start().to_owned()
@@ -313,7 +314,9 @@ pub fn get_full_path(path: &str, cmd: &str) -> String {
     format!("{}/{}", path, cmd)
 }
 
-fn gen_new_seeds() -> Vec<String> {
+/// generate random three strings. Strings will have eigther ascii or alphanumeric format.
+/// The length of strings are chosen randomly up to 50.
+fn gen_random_strings() -> Vec<String> {
     let mut seeds: Vec<String> = vec![];
     let strategy = random();
     for _ in 1..3 {
@@ -334,7 +337,7 @@ fn gen_new_seeds() -> Vec<String> {
 
 #[test]
 fn gen_strings() {
-    println!("seeds: {:?}", gen_new_seeds());
+    println!("seeds: {:?}", gen_random_strings());
     assert!(true);
 }
 
