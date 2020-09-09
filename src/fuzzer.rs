@@ -90,7 +90,9 @@ impl <'f>Fuzzer<'f> {
         let mut population = self.population.clone();
         let candidate = self.scheduler.select_next(&mut population);
 
-        let res = self.mutator.mutate(candidate);
+        let res = self.mutator.mutate(candidate.value.clone());
+        candidate.value = res.clone();
+        self.population = population;
         res
     }
 
@@ -104,7 +106,7 @@ impl <'f>Fuzzer<'f> {
     }
 
     fn reset<'a>(&'a mut self) {
-        self.population = vec![];
+        self.population = self.inputs.clone().into_iter().map(|s| Seed::new(s)).collect();
     }
 
     pub fn run<'s: 'f>(&'f mut self, dir: &str, path: &'f str) {
@@ -155,7 +157,7 @@ impl <'f>Fuzzer<'f> {
                     if non_unique_hits % 10000 == 0 {
                         self.print_stats(format!("resetting seeds and genereting new ones"));
                         self.reset();
-                        self.fill_population(gen_random_strings());
+                        self.population.extend(gen_random_strings().into_iter().map(|s| Seed::new(s)));
                     } else if non_unique_hits % max_num_iter == 0 {
                         self.print_stats(format!("after {} various mutations there still is no unique hits, so stopping fuzzing", non_unique_hits));
                         running = false;
@@ -205,7 +207,21 @@ impl <'f>Fuzzer<'f> {
 
     fn exec_program(&mut self, dir: &str, cmd: &str, input: String) -> String {
         let mut args = vec![];
-        if input.len() != 0 { args.push(input) }
+        if input.len() != 0 { args.push(input.clone()) }
+
+        //let mut child = Command::new(get_full_path(dir,cmd))
+            //.stdin(Stdio::piped())
+            //.stdout(Stdio::piped())
+            //.spawn()
+            //.expect("Failed to spawn child process");
+
+        //{
+            //let mut stdin = child.stdin.as_mut().expect("Failed to open stdin");
+            //stdin.write_all(input.as_bytes()).expect("Failed to write to stdin");
+        //}
+
+        //let output = child.wait_with_output().expect("Failed to read stdout");
+
         let output = Command::new(get_full_path(dir,cmd))
             .args(args)
             //.current_dir(dir)
@@ -315,12 +331,12 @@ pub fn get_full_path(path: &str, cmd: &str) -> String {
 }
 
 /// generate random three strings. Strings will have eigther ascii or alphanumeric format.
-/// The length of strings are chosen randomly up to 50.
+/// The length of strings are chosen randomly up to 6.
 fn gen_random_strings() -> Vec<String> {
     let mut seeds: Vec<String> = vec![];
     let strategy = random();
-    for _ in 1..3 {
-        let str_len = rand::thread_rng().gen_range(1, 50);
+    //for _ in 1..3 {
+        let str_len = rand::thread_rng().gen_range(1, 6);
         let mut v: Vec<char> = vec![];
         for _ in 1..str_len {
             let c = if strategy {
@@ -330,8 +346,8 @@ fn gen_random_strings() -> Vec<String> {
             };
             v.push(c);
         }
-        seeds.push(v.into_iter().collect())
-    }
+        seeds.push(v.into_iter().collect());
+    //}
     seeds
 }
 

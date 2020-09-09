@@ -15,10 +15,10 @@ impl Mutator {
     }
 
     pub fn mutate<'f, 'a>(&'a mut self, candidate: String) -> String {
-        match self.rng.gen_range(1, 4) {
+        match self.rng.gen_range(1, 6) {
             1 => self.insert_random_char(candidate),
-            2 => self.delete_random_char(candidate),
-            3 => self.flip_random_char(candidate),
+            2 | 3 => self.delete_random_char(candidate),
+            4 | 5 => self.flip_random_char(candidate),
             _ => panic!("will not happen")
         }
     }
