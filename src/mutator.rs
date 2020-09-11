@@ -1,5 +1,16 @@
 use rand::prelude::*; 
-use rand::distributions::{Distribution, Uniform};
+use rand::distributions::{Distribution, Standard, Uniform, Alphanumeric};
+use rand::Rng;
+
+struct ASCII {
+    c: char,
+}
+
+impl Distribution<ASCII> for Standard {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> ASCII {
+        ASCII { c: rng.gen_range(32u8,127u8) as char }
+    }
+}
 
 pub struct Mutator {
     pub rng: ThreadRng,
@@ -60,6 +71,29 @@ impl Mutator {
         res_str    }
             
 }
+
+/// generate random three strings. Strings will have eigther ascii or alphanumeric format.
+/// The length of strings are chosen randomly up to 6.
+pub fn gen_random_strings() -> Vec<String> {
+    let mut seeds: Vec<String> = vec![];
+    let strategy = random();
+    //for _ in 1..3 {
+        let str_len = rand::thread_rng().gen_range(1, 6);
+        let mut v: Vec<char> = vec![];
+        for _ in 1..str_len {
+            let c = if strategy {
+                StdRng::from_entropy().sample::<ASCII,_>(Standard).c
+            } else {
+                StdRng::from_entropy().sample(Alphanumeric)
+            };
+            v.push(c);
+        }
+        seeds.push(v.into_iter().collect());
+    //}
+    seeds
+}
+
+
 
 #[test]
 fn test() {

@@ -1,23 +1,16 @@
 use std::time::Instant;
 use std::process::Command;
-use std::str;
-use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{self, BufRead};
-use std::path::Path;
-use lazy_static::lazy_static;
-use regex::Regex;
 use std::fmt;
 use crate::mutator::*;
 use crate::scheduler::*;
-use rand::Rng;
-use rand::distributions::{Distribution, Standard, Alphanumeric};
-use rand::prelude::*;
+use std::str;
+use std::process::Stdio;
+use std::io::Write;
 
 
 #[derive(Debug)]
-struct Coverage {
+pub struct Coverage {
     unique_lines: HashSet<i32>,
     hitted_lines: usize,
     unique_hits: i32,
@@ -26,35 +19,10 @@ struct Coverage {
 
 impl fmt::Display for Coverage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut unique_hits = String::from("");
         let mut sorted_hits: Vec<i32> = self.unique_lines.clone().into_iter().collect();
         sorted_hits.sort();
-        for line in sorted_hits {
-            let s = format!("test.c:{}, ",line.to_string());
-            unique_hits = format!("{}{}", unique_hits, s); 
-        }
-        unique_hits = unique_hits.trim_end().trim_end_matches(',').to_string();
-        write!(f, "{}\n{}", self.unique_hits, unique_hits)
+        write!(f, "{}\n{:?}", self.unique_hits, sorted_hits)
     }
-}
-
-struct ASCII {
-    c: char,
-}
-
-impl Distribution<ASCII> for Standard {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> ASCII {
-        ASCII { c: rng.gen_range(32u8,127u8) as char }
-    }
-}
-
-pub struct Fuzzer <'f> {
-    seeds: Vec<String>,
-    pub population: Vec<Seed>,
-    print_stats: bool,
-    mutator: &'f mut Mutator,
-    scheduler: &'f mut Scheduler,
-    inputs: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +38,15 @@ impl Seed {
             energy: 0,
         }
     }
+}
+
+pub struct Fuzzer <'f> {
+    seeds: Vec<String>,
+    pub population: Vec<Seed>,
+    print_stats: bool,
+    mutator: &'f mut Mutator,
+    scheduler: &'f mut Scheduler,
+    inputs: Vec<String>,
 }
 
 impl <'f>Fuzzer<'f> {
@@ -109,7 +86,7 @@ impl <'f>Fuzzer<'f> {
         self.population = self.inputs.clone().into_iter().map(|s| Seed::new(s)).collect();
     }
 
-    pub fn run<'s: 'f>(&'f mut self, dir: &str, path: &'f str) {
+    pub fn run<'s: 'f>(&'f mut self, dir: &str, cmd_name: &'f str) {
         let time = Instant::now();
         let max_num_iter = 50000;
         let mut total_number_of_lines = 0;
@@ -125,13 +102,13 @@ impl <'f>Fuzzer<'f> {
             debug!("next candidate is {}", candidate);
 
             debug!("running the program");
-            let _result = self.exec_program(dir, path, candidate.clone());
+            let _result = exec_program(dir, cmd_name, candidate.clone());
 
             debug!("parsing coverage results");
-            let map = self.parse_coverage(dir);
+            let map = parser::parse_coverage(dir);
 
             debug!("extracting unique hits");
-            let cov = self.get_cov(map, &unique_hits_global);
+            let cov = parser::get_cov(map, &unique_hits_global);
             num_hits += cov.hitted_lines;
             if num_exec == 0 {
                 total_number_of_lines =  cov.reachable_lines;
@@ -168,12 +145,7 @@ impl <'f>Fuzzer<'f> {
             unique_hits_global.extend(cov.unique_lines);
             num_exec += 1;
 
-            Command::new("rm")
-                .current_dir(dir)
-                .arg("-f")
-                .arg("cgi.c")
-                .output()
-                .expect("failed to execute gcov");
+            remove_coverage_info(dir, cmd_name);
         }
 
         self.print_stats(format!("time: {} seconds", time.elapsed().as_secs()));
@@ -205,44 +177,67 @@ impl <'f>Fuzzer<'f> {
         self.population.sort_by(|a, b| a.energy.cmp(&b.energy));
     }
 
-    fn exec_program(&mut self, dir: &str, cmd: &str, input: String) -> String {
-        let mut args = vec![];
-        if input.len() != 0 { args.push(input.clone()) }
+    fn print_stats(&mut self, s: String) {
+        if self.print_stats {
+            println!("{}", s);
+        }
+    }
+}
 
-        //let mut child = Command::new(get_full_path(dir,cmd))
-            //.stdin(Stdio::piped())
-            //.stdout(Stdio::piped())
-            //.spawn()
-            //.expect("Failed to spawn child process");
+fn exec_program(dir: &str, cmd_name: &str, input: String) -> String {
+    let mut args = vec![];
+    if input.len() != 0 { args.push(input.clone()) }
 
-        //{
-            //let mut stdin = child.stdin.as_mut().expect("Failed to open stdin");
-            //stdin.write_all(input.as_bytes()).expect("Failed to write to stdin");
-        //}
+    let mut child = Command::new(get_full_path(dir, cmd_name))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn child process");
 
-        //let output = child.wait_with_output().expect("Failed to read stdout");
-
-        let output = Command::new(get_full_path(dir,cmd))
-            .args(args)
-            //.current_dir(dir)
-            .output()
-            .expect("failed to execute cgi");
-        Command::new("gcov")
-            .arg("cgi.c")
-            .current_dir(dir)
-            .output()
-            .expect("failed to execute gcov");
-        let res = output.stdout.to_vec();
-        let res: &str = unsafe { str::from_utf8_unchecked(&res) };
-        res.to_owned()
+    {
+        let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+        stdin.write_all(input.as_bytes()).expect("Failed to write to stdin");
     }
 
-   
+    let output = child.wait_with_output().expect("Failed to read stdout");
 
-    fn get_cov(&mut self, map: HashMap<String, String>, unique_hits_global: &HashSet<i32>) -> Coverage {
-        let map = self.get_reachable_lines(map);
+    Command::new("gcov")
+        .arg(format!("{}.c", cmd_name))
+        .current_dir(dir)
+        .output()
+        .expect("failed to execute gcov");
+    let res = output.stdout.to_vec();
+    let res: &str = unsafe { str::from_utf8_unchecked(&res) };
+    res.to_owned()
+}
+
+pub fn get_full_path(path: &str, cmd: &str) -> String {
+    format!("{}/{}", path, cmd)
+}
+
+fn remove_coverage_info(dir: &str, cmd_name: &str) {
+    Command::new("rm")
+        .current_dir(dir)
+        .arg("-f")
+        .arg(format!("{}.c", cmd_name))
+        .output()
+        .expect("failed to execute gcov");
+}
+
+mod parser {
+    use super::HashSet;
+    use super::Coverage;
+    use std::collections::HashMap;
+    use std::fs::File;
+    use std::io::{self, BufRead};
+    use std::path::Path;
+    use lazy_static::lazy_static;
+    use regex::Regex;
+
+    pub fn get_cov(map: HashMap<String, String>, unique_hits_global: &HashSet<i32>) -> Coverage {
+        let map = get_reachable_lines(map);
         let reachable_lines = map.len() as usize;
-        let hitted_lines = self.get_hitted_lines(map);
+        let hitted_lines = get_hitted_lines(map);
         let unique_lines: HashSet<i32> = hitted_lines
                 .keys()
                 .filter(|stmt| !unique_hits_global.contains(stmt))
@@ -260,28 +255,27 @@ impl <'f>Fuzzer<'f> {
     /// return hashmap with line number as a key and number of hits as a value.
     /// From here, it is easy to calc total number of lines in the program,
     /// number of hits for each line and also we can compare how many unique hits were covered.
-    fn get_hitted_lines(&mut self, map: HashMap<String,String>) -> HashMap<i32, i32> {
-        self.get_reachable_lines(map).iter()
+    fn get_hitted_lines(map: HashMap<String,String>) -> HashMap<i32, i32> {
+        get_reachable_lines(map).iter()
             .filter(|(_k,v)| !v.contains("#"))
             .map(|(k,v)| (k.parse().unwrap(), v.parse().unwrap()))
             .collect()
     }
 
-    fn get_reachable_lines(&mut self, map: HashMap<String,String>) -> HashMap<String,String>{
+    fn get_reachable_lines(map: HashMap<String,String>) -> HashMap<String,String>{
         map.into_iter()
             .filter(|(_k,v)| !v.contains("-"))
             .collect()
     }
 
     /// parse coverage of the executed program. Return a map with lines and number of hits
-    fn parse_coverage(&mut self, path: &str) -> HashMap<String, String> {
+    pub fn parse_coverage(path: &str) -> HashMap<String, String> {
         let mut map = HashMap::new();
-        if let Ok(lines) = self.read_lines(get_full_path(path, "cgi.c.gcov")) {
+        if let Ok(lines) = read_lines(super::get_full_path(path, "cgi.c.gcov")) {
             for (i, line) in lines.enumerate() {
                 if let Ok(s) = line {
-                    //todo: add debugging
                     trace!("original: {}: {}\n", i, s);
-                    if let Some((l, hits)) = self.extract_hits_and_line_number(s.as_str()) {
+                    if let Some((l, hits)) = extract_hits_and_line_number(s.as_str()) {
                         trace!("parsed: line number:{}; hits:{}\n", l, hits);
                         map.insert(l, hits);
                     }
@@ -292,13 +286,13 @@ impl <'f>Fuzzer<'f> {
     }
 
     ///read lines from the file and return itrator with lines of contents
-    fn read_lines<P>(&mut self, filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
+    fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
         where P: AsRef<Path> {
         let file = File::open(filename)?;
         Ok(io::BufReader::new(file).lines())
     }
 
-    fn extract_hits_and_line_number(&mut self, line: &str) -> Option<(String, String)> {
+    fn extract_hits_and_line_number(line: &str) -> Option<(String, String)> {
         lazy_static! {
             static ref FUZZ_REGEX : Regex = Regex::new(
                     r"[\s].[0-9|#|-]+[:]"
@@ -309,52 +303,15 @@ impl <'f>Fuzzer<'f> {
         if vals.len() == 0 {
             None
         } else {
-            Some((self.clean_str(vals[1]), self.clean_str(vals[0])))
+            Some((clean_str(vals[1]), clean_str(vals[0])))
         }
     }
 
-    fn clean_str(&mut self, s: &str) -> String {
+    fn clean_str(s: &str) -> String {
         let result = s.replace(":", "");
         result.trim_start().to_owned()
     }
 
-    fn print_stats(&mut self, s: String) {
-        if self.print_stats {
-            println!("{}", s);
-        }
-    }
-
-}
-
-pub fn get_full_path(path: &str, cmd: &str) -> String {
-    format!("{}/{}", path, cmd)
-}
-
-/// generate random three strings. Strings will have eigther ascii or alphanumeric format.
-/// The length of strings are chosen randomly up to 6.
-fn gen_random_strings() -> Vec<String> {
-    let mut seeds: Vec<String> = vec![];
-    let strategy = random();
-    //for _ in 1..3 {
-        let str_len = rand::thread_rng().gen_range(1, 6);
-        let mut v: Vec<char> = vec![];
-        for _ in 1..str_len {
-            let c = if strategy {
-                StdRng::from_entropy().sample::<ASCII,_>(Standard).c
-            } else {
-                StdRng::from_entropy().sample(Alphanumeric)
-            };
-            v.push(c);
-        }
-        seeds.push(v.into_iter().collect());
-    //}
-    seeds
-}
-
-#[test]
-fn gen_strings() {
-    println!("seeds: {:?}", gen_random_strings());
-    assert!(true);
 }
 
 #[test]
@@ -367,7 +324,6 @@ fn correct_fill_population() {
     assert_eq!(seeds.len(), fuzzer.population.len());
     assert_eq!(seeds, fuzzer.population.into_iter().map(|s| s.value).collect::<Vec<String>>());
 }
-
 
 #[test]
 fn correct_update_population() {
