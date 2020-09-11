@@ -1,9 +1,10 @@
 Rust-AFL-Fuzzer is a simple mutation-based fuzzer which implements [AFL](https://lcamtuf.coredump.cx/afl/).
-The app takes a gcc-compiled binary file as an argument. 
-For example, once you built executable of the fuzzer with `cargo build` and testing program with `make build` (see one of the `examples`),
-you can run the fuzzer over that compiler C program:
+
 
 ## How to run:
+
+Once you built executable of the fuzzer with `cargo build` and testing program with `make build` (see one of the `examples`),
+you can run the fuzzer over that compiled C program:
 
 `./target/debug/fuzz -d=./examples/example1 -show example.c`
 
@@ -12,7 +13,7 @@ the option `-show` will print out useful statistics while the fuzzer is working.
 `-d` points on the dirictory with testing program, its binary and meta information needed for analysis 
 (e.g. to get feedback how many lines in the program have been executed)
 
-last option is the name of the C programs which is going to be analyzed.
+the last option is the name of the C program which is going to be tested.
 
 ## or you can simply:
 
