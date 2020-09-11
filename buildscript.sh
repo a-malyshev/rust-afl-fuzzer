@@ -1,10 +1,8 @@
 #!/bin/sh
 
-rustup default stable
-cd sources
 cargo clean && cargo build
-cp target/debug/fuzz ../test-app
-cd ../test-app
-
+cd ./examples/example1
 make clean; make build
-./fuzz -show
+cd ../../
+
+./target/debug/fuzz -d=./examples/example1 -show example.c

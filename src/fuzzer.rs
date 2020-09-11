@@ -105,7 +105,7 @@ impl <'f>Fuzzer<'f> {
             let _result = exec_program(dir, cmd_name, candidate.clone());
 
             debug!("parsing coverage results");
-            let map = parser::parse_coverage(dir);
+            let map = parser::parse_coverage(dir, cmd_name);
 
             debug!("extracting unique hits");
             let cov = parser::get_cov(map, &unique_hits_global);
@@ -269,9 +269,9 @@ mod parser {
     }
 
     /// parse coverage of the executed program. Return a map with lines and number of hits
-    pub fn parse_coverage(path: &str) -> HashMap<String, String> {
+    pub fn parse_coverage(path: &str, cmd_name: &str) -> HashMap<String, String> {
         let mut map = HashMap::new();
-        if let Ok(lines) = read_lines(super::get_full_path(path, "cgi.c.gcov")) {
+        if let Ok(lines) = read_lines(super::get_full_path(path, format!("{}.c.gcov", cmd_name).as_str())) {
             for (i, line) in lines.enumerate() {
                 if let Ok(s) = line {
                     trace!("original: {}: {}\n", i, s);
